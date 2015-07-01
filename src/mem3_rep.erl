@@ -21,7 +21,7 @@
 ]).
 
 -export([
-    changes_enumerator/3
+    changes_enumerator/2
 ]).
 
 
@@ -170,11 +170,12 @@ find_source_seq_int(#doc{body={Props}}, SrcNode0, TgtNode0, TgtUUID, TgtSeq) ->
     end.
 
 
-repl(#db{name=DbName, seq_tree=Bt}=Db, Acc0) ->
+repl(Db, Acc0) ->
+    DbName = couch_db:name(Db),
     erlang:put(io_priority, {internal_repl, DbName}),
     #acc{seq=Seq} = Acc1 = calculate_start_seq(Acc0#acc{source = Db}),
-    Fun = fun ?MODULE:changes_enumerator/3,
-    {ok, _, Acc2} = couch_btree:fold(Bt, Fun, Acc1, [{start_key, Seq + 1}]),
+    Fun = fun ?MODULE:changes_enumerator/2,
+    {ok, Acc2} = couch_db:fold_changes(Db, Seq, Fun, Acc1),
     {ok, #acc{seq = LastSeq}} = replicate_batch(Acc2),
     {ok, couch_db:count_changes_since(Db, LastSeq)}.
 
@@ -225,11 +226,10 @@ compare_epochs(Acc) ->
     Seq = mem3_rpc:find_common_seq(Node, Name, UUID, Epochs),
     Acc#acc{seq = Seq, history = {[]}}.
 
-changes_enumerator(#doc_info{id=DocId}, Reds, #acc{db=Db}=Acc) ->
+changes_enumerator(#doc_info{id=DocId}, #acc{db=Db}=Acc) ->
     {ok, FDI} = couch_db:get_full_doc_info(Db, DocId),
-    changes_enumerator(FDI, Reds, Acc);
-changes_enumerator(#full_doc_info{}=FDI, _,
-  #acc{revcount=C, infos=Infos}=Acc0) ->
+    changes_enumerator(FDI, Acc);
+changes_enumerator(#full_doc_info{}=FDI, #acc{revcount=C, infos=Infos}=Acc0) ->
     #doc_info{
         high_seq=Seq,
         revs=Revs
@@ -325,11 +325,11 @@ find_repl_doc(SrcDb, TgtUUIDPrefix) ->
                 {stop, not_found}
         end
     end,
-    Options = [{start_key, DocIdPrefix}],
-    case couch_btree:fold(SrcDb#db.local_tree, FoldFun, not_found, Options) of
-        {ok, _, {TgtUUID, Doc}} ->
+    Options = [{start_key, DocIdPrefix}, {local, true}],
+    case couch_db:fold_docs(SrcDb, Options, FoldFun, not_found) of
+        {ok, {TgtUUID, Doc}} ->
             {ok, TgtUUID, Doc};
-        {ok, _, not_found} ->
+        {ok, not_found} ->
             {not_found, missing};
         Else ->
             couch_log:error("Error finding replication doc: ~w", [Else]),

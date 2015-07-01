@@ -214,11 +214,17 @@ shard_info(DbName) ->
 ensure_exists(DbName) when is_list(DbName) ->
     ensure_exists(list_to_binary(DbName));
 ensure_exists(DbName) ->
-    case couch_db:open(DbName, [nologifmissing, sys_db | [?ADMIN_CTX]]) of
+    OpenOpts = [nologifmissing, sysdb, ?ADMIN_CTX],
+    case couch_db:open(DbName, OpenOpts) of
     {ok, Db} ->
         {ok, Db};
     _ ->
-        couch_server:create(DbName, [?ADMIN_CTX])
+        case couch_server:create(DbName, [?ADMIN_CTX]) of
+            file_exists ->
+                couch_server:open(DbName, OpenOpts);
+            Else ->
+                Else
+        end
     end.
 
 
