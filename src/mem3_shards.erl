@@ -155,7 +155,7 @@ fold(Fun, Acc) ->
     {ok, Db} = mem3_util:ensure_exists(DbName),
     FAcc = {Db, Fun, Acc},
     try
-        {ok, _, LastAcc} = couch_db:enum_docs(Db, fun fold_fun/3, FAcc, []),
+        {ok, LastAcc} = couch_db:fold_docs(Db, fun fold_fun/2, FAcc),
         {_Db, _UFun, UAcc} = LastAcc,
         UAcc
     after
@@ -247,10 +247,10 @@ code_change(_OldVsn, #st{}=St, _Extra) ->
 
 %% internal functions
 
-fold_fun(#full_doc_info{}=FDI, _, Acc) ->
+fold_fun(#full_doc_info{}=FDI, Acc) ->
     DI = couch_doc:to_doc_info(FDI),
-    fold_fun(DI, nil, Acc);
-fold_fun(#doc_info{}=DI, _, {Db, UFun, UAcc}) ->
+    fold_fun(DI, Acc);
+fold_fun(#doc_info{}=DI, {Db, UFun, UAcc}) ->
     case couch_db:open_doc(Db, DI, [ejson_body, conflicts]) of
         {ok, Doc} ->
             {Props} = Doc#doc.body,
@@ -264,8 +264,11 @@ fold_fun(#doc_info{}=DI, _, {Db, UFun, UAcc}) ->
 get_update_seq() ->
     DbName = config:get("mem3", "shards_db", "_dbs"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
-    couch_db:close(Db),
-    Db#db.update_seq.
+    try
+        couch_db:get_update_seq(Db)
+    after
+        couch_db:close(Db)
+    end.
 
 listen_for_changes(Since) ->
     DbName = config:get("mem3", "shards_db", "_dbs"),
