@@ -28,7 +28,7 @@ handle_membership_req(#httpd{method='GET',
         {cluster_nodes, lists:sort(ClusterNodes)}
     ]});
 handle_membership_req(#httpd{path_parts=[<<"_membership">>]}=Req) ->
-    chttpd:send_method_not_allowed(Req, "GET").
+    couch_httpd:send_method_not_allowed(Req, "GET").
 
 handle_shards_req(#httpd{method='GET',
         path_parts=[_DbName, <<"_shards">>]} = Req, Db) ->
@@ -48,9 +48,9 @@ handle_shards_req(#httpd{method='GET',
         {nodes, Dbs}
     ]});
 handle_shards_req(#httpd{path_parts=[_DbName, <<"_shards">>]}=Req, _Db) ->
-    chttpd:send_method_not_allowed(Req, "GET");
+    couch_httpd:send_method_not_allowed(Req, "GET");
 handle_shards_req(#httpd{path_parts=[_DbName, <<"_shards">>, _DocId]}=Req, _Db) ->
-    chttpd:send_method_not_allowed(Req, "GET").
+    couch_httpd:send_method_not_allowed(Req, "GET").
 
 %%
 %% internal
