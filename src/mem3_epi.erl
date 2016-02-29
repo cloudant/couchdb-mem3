@@ -30,7 +30,7 @@ app() ->
 
 providers() ->
     [
-         {chttpd_handlers, mem3_httpd_handlers}
+         {http_clustered_handlers, mem3_httpd_handlers}
     ].
 
 
