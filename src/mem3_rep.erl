@@ -39,7 +39,8 @@
     target,
     filter,
     db,
-    history = {[]}
+    history = {[]},
+    purge_seq = 0
 }).
 
 
@@ -170,12 +171,31 @@ find_source_seq_int(#doc{body={Props}}, SrcNode0, TgtNode0, TgtUUID, TgtSeq) ->
     end.
 
 
-repl(#db{name=DbName}=Db, Acc0) ->
+repl(#db{name=DbName, engine={Engine, St}}=Db, Acc0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
-    #acc{seq=Seq} = Acc1 = calculate_start_seq(Acc0#acc{source = Db}),
+    Acc1 = calculate_start_seq(Acc0#acc{source = Db}),
+    #acc{seq=Seq,
+        purge_seq = PurgeSeq0,
+        target = #shard{node=Node, name=Name}
+    } = Acc1,
+
+    % apply purged docs to target
+    Fun0 = fun(_PurgeSeq, {Id, Revs}, Acc) ->
+        {ok, [{Id, Revs} | Acc]}
+    end,
+    {ok, PIdsRevs} = Engine:fold_purged_docs(St, PurgeSeq0, Fun0, [], []),
+    Acc2 = case PIdsRevs of
+        [] ->
+            Acc1;
+        _ ->
+            ok = purge_on_target(Node, Name, lists:reverse(PIdsRevs)),
+            PurgeSeq = Engine:get(St, purge_seq),
+            Acc1#acc{purge_seq = PurgeSeq}
+    end,
+
     Fun = fun ?MODULE:changes_enumerator/2,
-    {ok, Acc2} = couch_db:fold_changes(Db, Seq, Fun, Acc1),
-    {ok, #acc{seq = LastSeq}} = replicate_batch(Acc2),
+    {ok, Acc3} = couch_db:fold_changes(Db, Seq, Fun, Acc2),
+    {ok, #acc{seq = LastSeq}} = replicate_batch(Acc3),
     {ok, couch_db:count_changes_since(Db, LastSeq)}.
 
 
@@ -210,7 +230,15 @@ calculate_start_seq(Acc) ->
                     Seq = TargetSeq,
                     History = couch_util:get_value(<<"history">>, TProps, {[]})
             end,
-            Acc1#acc{seq = Seq, history = History};
+            SourcePurgeSeq = couch_util:get_value(<<"purge_seq">>, SProps, 0),
+            TargetPurgeSeq = couch_util:get_value(<<"purge_seq">>, TProps, 0),
+            case SourcePurgeSeq =< TargetPurgeSeq of
+                true ->
+                    PurgeSeq = SourcePurgeSeq;
+                false ->
+                    PurgeSeq = TargetPurgeSeq
+            end,
+            Acc1#acc{seq = Seq, history = History, purge_seq = PurgeSeq};
         {not_found, _} ->
             compare_epochs(Acc1)
     end.
@@ -291,8 +319,14 @@ save_on_target(Node, Name, Docs) ->
     ok.
 
 
+purge_on_target(Node, Name, PIdsRevs) ->
+    mem3_rpc:purge_docs(Node, Name, PIdsRevs),
+    ok.
+
+
 update_locals(Acc) ->
-    #acc{seq=Seq, source=Db, target=Target, localid=Id, history=History} = Acc,
+    #acc{seq=Seq, purge_seq = PurgeSeq, source=Db, target=Target,
+            localid=Id, history=History} = Acc,
     #shard{name=Name, node=Node} = Target,
     NewEntry = [
         {<<"source_node">>, atom_to_binary(node(), utf8)},
@@ -300,8 +334,9 @@ update_locals(Acc) ->
         {<<"source_seq">>, Seq},
         {<<"timestamp">>, list_to_binary(iso8601_timestamp())}
     ],
-    NewBody = mem3_rpc:save_checkpoint(Node, Name, Id, Seq, NewEntry, History),
-    {ok, _} = couch_db:update_doc(Db, #doc{id = Id, body = NewBody}, []).
+    NewBody = mem3_rpc:save_checkpoint(Node, Name, Id, Seq, PurgeSeq,
+            NewEntry, History),
+   {ok, _} = couch_db:update_doc(Db, #doc{id = Id, body = NewBody}, []).
 
 
 find_repl_doc(SrcDb, TgtUUIDPrefix) ->

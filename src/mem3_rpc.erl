@@ -19,15 +19,16 @@
     find_common_seq/4,
     get_missing_revs/4,
     update_docs/4,
+    purge_docs/3,
     load_checkpoint/4,
-    save_checkpoint/6
+    save_checkpoint/7
 ]).
 
 % Private RPC callbacks
 -export([
     find_common_seq_rpc/3,
     load_checkpoint_rpc/3,
-    save_checkpoint_rpc/5
+    save_checkpoint_rpc/6
 ]).
 
 
@@ -43,13 +44,17 @@ update_docs(Node, DbName, Docs, Options) ->
     rexi_call(Node, {fabric_rpc, update_docs, [DbName, Docs, Options]}).
 
 
+purge_docs(Node, DbName, PIdsRevs) ->
+    rexi_call(Node, {fabric_rpc, purge_docs, [DbName, PIdsRevs]}).
+
+
 load_checkpoint(Node, DbName, SourceNode, SourceUUID) ->
     Args = [DbName, SourceNode, SourceUUID],
     rexi_call(Node, {mem3_rpc, load_checkpoint_rpc, Args}).
 
 
-save_checkpoint(Node, DbName, DocId, Seq, Entry, History) ->
-    Args = [DbName, DocId, Seq, Entry, History],
+save_checkpoint(Node, DbName, DocId, Seq, PurgeSeq, Entry, History) ->
+    Args = [DbName, DocId, Seq, PurgeSeq, Entry, History],
     rexi_call(Node, {mem3_rpc, save_checkpoint_rpc, Args}).
 
 
@@ -81,7 +86,8 @@ load_checkpoint_rpc(DbName, SourceNode, SourceUUID) ->
     end.
 
 
-save_checkpoint_rpc(DbName, Id, SourceSeq, NewEntry0, History0) ->
+save_checkpoint_rpc(DbName, Id, SourceSeq, SourcePurgeSeq,
+        NewEntry0, History0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     case get_or_create_db(DbName, [?ADMIN_CTX]) of
         {ok, Db} ->
@@ -93,6 +99,7 @@ save_checkpoint_rpc(DbName, Id, SourceSeq, NewEntry0, History0) ->
             ] ++ NewEntry0},
             Body = {[
                 {<<"seq">>, SourceSeq},
+                {<<"purge_seq">>, SourcePurgeSeq},
                 {<<"target_uuid">>, couch_db:get_uuid(Db)},
                 {<<"history">>, add_checkpoint(NewEntry, History0)}
             ]},
