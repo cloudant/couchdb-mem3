@@ -171,32 +171,22 @@ find_source_seq_int(#doc{body={Props}}, SrcNode0, TgtNode0, TgtUUID, TgtSeq) ->
     end.
 
 
-repl(#db{name=DbName, engine={Engine, St}}=Db, Acc0) ->
+repl(#db{name=DbName}=Db, Acc0) ->
     erlang:put(io_priority, {internal_repl, DbName}),
-    Acc1 = calculate_start_seq(Acc0#acc{source = Db}),
-    #acc{seq=Seq,
-        purge_seq = PurgeSeq0,
-        target = #shard{node=Node, name=Name}
-    } = Acc1,
+    #acc{seq=Seq} = Acc1 = calculate_start_seq(Acc0#acc{source = Db}),
+    try
+        % this throws an exception: {invalid_start_purge_seq, PurgeSeq0},
+        % when oldest_purge_seq on source > the last source purge_seq known to target
+        Acc2 = replicate_purged_docs(Acc1),
 
-    % apply purged docs to target
-    Fun0 = fun(_PurgeSeq, {Id, Revs}, Acc) ->
-        {ok, [{Id, Revs} | Acc]}
-    end,
-    {ok, PIdsRevs} = Engine:fold_purged_docs(St, PurgeSeq0, Fun0, [], []),
-    Acc2 = case PIdsRevs of
-        [] ->
-            Acc1;
-        _ ->
-            ok = purge_on_target(Node, Name, lists:reverse(PIdsRevs)),
-            PurgeSeq = Engine:get(St, purge_seq),
-            Acc1#acc{purge_seq = PurgeSeq}
-    end,
-
-    Fun = fun ?MODULE:changes_enumerator/2,
-    {ok, Acc3} = couch_db:fold_changes(Db, Seq, Fun, Acc2),
-    {ok, #acc{seq = LastSeq}} = replicate_batch(Acc3),
-    {ok, couch_db:count_changes_since(Db, LastSeq)}.
+        Fun = fun ?MODULE:changes_enumerator/2,
+        {ok, Acc3} = couch_db:fold_changes(Db, Seq, Fun, Acc2),
+        {ok, #acc{seq = LastSeq}} = replicate_batch(Acc3),
+        {ok, couch_db:count_changes_since(Db, LastSeq)}
+    catch
+        throw:{invalid_start_purge_seq, PurgeSeq} ->
+            couch_log:error("oldest_purge_seq on source passed purge_seq: ~p known to target for db: ~p", [PurgeSeq, DbName])
+    end.
 
 
 calculate_start_seq(Acc) ->
@@ -230,8 +220,14 @@ calculate_start_seq(Acc) ->
                     Seq = TargetSeq,
                     History = couch_util:get_value(<<"history">>, TProps, {[]})
             end,
-            SourcePurgeSeq = couch_util:get_value(<<"purge_seq">>, SProps, 0),
-            TargetPurgeSeq = couch_util:get_value(<<"purge_seq">>, TProps, 0),
+            SourcePurgeSeq0 = couch_util:get_value(<<"purge_seq">>, SProps),
+            TargetPurgeSeq0 = couch_util:get_value(<<"purge_seq">>, TProps),
+            % before purge upgrade, purge_seq was not saved in checkpoint file,
+            % thus get purge_seq directly from dbs
+            SourcePurgeSeq = if SourcePurgeSeq0 /= undefined -> SourcePurgeSeq0;
+                    true -> couch_db:get_purge_seq(Db) end,
+            TargetPurgeSeq = if TargetPurgeSeq0 /= undefined -> TargetPurgeSeq0;
+                    true -> mem3_rpc:get_purge_seq(Node, Name) end,
             case SourcePurgeSeq =< TargetPurgeSeq of
                 true ->
                     PurgeSeq = SourcePurgeSeq;
@@ -272,6 +268,26 @@ changes_enumerator(#full_doc_info{}=FDI, #acc{revcount=C, infos=Infos}=Acc0) ->
     },
     Go = if Count < Acc1#acc.batch_size -> ok; true -> stop end,
     {Go, Acc1}.
+
+
+replicate_purged_docs(Acc0) ->
+    #acc{
+        source = Db,
+        target = #shard{node=Node, name=Name},
+        purge_seq = PurgeSeq0
+    } = Acc0,
+    Fun0 = fun(_PurgeSeq, {Id, Revs}, Acc) ->
+        {ok, [{Id, Revs} | Acc]}
+    end,
+    {ok, PIdsRevs} = couch_db:fold_purged_docs(Db, PurgeSeq0, Fun0, [], []),
+    case PIdsRevs of
+        [] ->
+            Acc0;
+        _ ->
+            ok = purge_on_target(Node, Name, lists:reverse(PIdsRevs)),
+            {ok, PurgeSeq} = couch_db:get_purge_seq(Db),
+            Acc0#acc{purge_seq = PurgeSeq}
+    end.
 
 
 replicate_batch(#acc{target = #shard{node=Node, name=Name}} = Acc) ->
@@ -319,8 +335,13 @@ save_on_target(Node, Name, Docs) ->
     ok.
 
 
-purge_on_target(Node, Name, PIdsRevs) ->
-    mem3_rpc:purge_docs(Node, Name, PIdsRevs),
+purge_on_target(Node, Name, IdsRevs) ->
+    mem3_rpc:purge_docs(Node, Name, IdsRevs,[
+        replicated_changes,
+        full_commit,
+        ?ADMIN_CTX,
+        {io_priority, {internal_repl, Name}}
+    ]),
     ok.
 
 
