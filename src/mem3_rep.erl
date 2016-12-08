@@ -285,8 +285,7 @@ replicate_purged_docs(Acc0) ->
             Acc0;
         _ ->
             ok = purge_on_target(Node, Name, lists:reverse(PIdsRevs)),
-            {ok, PurgeSeq} = couch_db:get_purge_seq(Db),
-            Acc0#acc{purge_seq = PurgeSeq}
+            Acc0#acc{purge_seq = couch_db:get_purge_seq(Db)}
     end.
 
 
