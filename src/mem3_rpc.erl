@@ -67,8 +67,8 @@ save_checkpoint(Node, DbName, DocId, Seq, PurgeSeq, Entry, History) ->
     rexi_call(Node, {mem3_rpc, save_checkpoint_rpc, Args}).
 
 
-load_purges(Node, DbName, SourceNode) ->
-    Args = [DbName, SourceNode],
+load_purges(Node, DbName, SourceUUID) ->
+    Args = [DbName, SourceUUID],
     rexi_call(Node, {mem3_rpc, load_purges_rpc, Args}).
 
 
@@ -155,11 +155,12 @@ find_common_seq_rpc(DbName, SourceUUID, SourceEpochs) ->
     end.
 
 
-load_purges_rpc(DbName, SourceNode) ->
+load_purges_rpc(DbName, SourceUUID) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     case get_or_create_db(DbName, [?ADMIN_CTX]) of
     {ok, Db} ->
-        DocId = mem3_rep:make_local_purge_id(SourceNode, node()),
+        TargetUUID = couch_db:get_uuid(Db),
+        DocId = mem3_rep:make_local_purge_id(SourceUUID, TargetUUID),
         LastPSeq = case couch_db:open_doc(Db, DocId, []) of
             {ok, #doc{body={Props}} } ->
                 couch_util:get_value(<<"purge_seq">>, Props);
@@ -186,12 +187,7 @@ save_purge_checkpoint_rpc(DbName, Id, PurgeSeq, Node) ->
     erlang:put(io_priority, {internal_repl, DbName}),
     case get_or_create_db(DbName, [?ADMIN_CTX]) of
         {ok, Db} ->
-            {{Year, Month, Day}, {Hour, Min, Sec}} =
-                calendar:now_to_universal_time(erlang:timestamp()),
-            Timestamp = lists:flatten(
-                io_lib:format("~.4.0w-~.2.0w-~.2.0wT~.2.0w:~.2.0w:~.2.0wZ",
-                [Year, Month, Day, Hour, Min, Sec])
-            ),
+            Timestamp = couch_util:utc_string(),
             Body = {[
                 {<<"purge_seq">>, PurgeSeq},
                 {<<"timestamp_utc">>, Timestamp},

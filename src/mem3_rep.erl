@@ -122,10 +122,8 @@ make_local_id(SourceThing, TargetThing, Filter) ->
     <<"_local/shard-sync-", S/binary, "-", T/binary, F/binary>>.
 
 
-make_local_purge_id(SourceNode, TargetNode) ->
-    S = couch_util:encodeBase64Url(couch_crypto:hash(md5, term_to_binary(SourceNode))),
-    T = couch_util:encodeBase64Url(couch_crypto:hash(md5, term_to_binary(TargetNode))),
-    <<"_local/purge-", S/binary, "-", T/binary>>.
+make_local_purge_id(SourceUUID, TargetUUID) ->
+   <<"_local/purge-mem3-", SourceUUID/binary, "-", TargetUUID/binary>>.
 
 
 %% @doc Find and return the largest update_seq in SourceDb
@@ -201,8 +199,9 @@ repl(#db{name=DbName}=Db, Acc0) ->
 
 
 pull_purges_from_target(Db, #acc{target=#shard{node=TNode, name=DbName}}=Acc) ->
+    SourceUUID = couch_db:get_uuid(Db),
     {TUUIDsIdsRevs, TargetPDocID, TargetPSeq} =
-            mem3_rpc:load_purges(TNode, DbName, node()),
+            mem3_rpc:load_purges(TNode, DbName, SourceUUID),
     Acc2 = case TUUIDsIdsRevs of
         [] -> Acc#acc{source = Db};
         _ ->
